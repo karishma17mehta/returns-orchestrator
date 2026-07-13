@@ -9,7 +9,10 @@ LLM — and it applies its verdict through the orchestrator's normal
 
 Safety rails:
 - The board can only approve or reject; it cannot move money directly.
-- A verdict is applied only when `auto_apply` is on AND confidence meets
+- Only APPROVE verdicts are ever auto-applied (a wrong approval costs one
+  bounded refund; a wrong rejection costs a customer). Reject/escalate
+  verdicts are always left for a human, with the board's advice attached.
+- An approval is applied only when `auto_apply` is on AND confidence meets
   the threshold AND no specialist hard-disagrees (approve vs reject split
   forces escalation to a human).
 """
@@ -188,7 +191,10 @@ class ReviewBoard:
     def _may_apply(
         self, verdict: LeadVerdict, assessments: list[AgentAssessment]
     ) -> bool:
-        if verdict.decision is Recommendation.ESCALATE:
+        if verdict.decision is not Recommendation.APPROVE:
+            # Asymmetric by design: a wrong auto-approval costs one bounded
+            # refund; a wrong auto-rejection costs a customer. Rejections
+            # (and escalations) always go to a human.
             return False
         if verdict.confidence < self.confidence_threshold:
             return False

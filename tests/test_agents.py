@@ -80,13 +80,19 @@ def test_unanimous_approve_is_applied(orch):
     assert "verdict_approve" in kinds
 
 
-def test_reject_verdict_is_applied(orch):
-    board = ReviewBoard(orch, fake_llm("reject", "reject", "escalate", "reject"))
+def test_reject_verdict_never_auto_applied(orch):
+    # Asymmetric guardrail: even a unanimous, high-confidence reject stays
+    # with a human — only approvals may be auto-applied.
+    board = ReviewBoard(orch, fake_llm("reject", "reject", "reject", "reject"))
     case = make_review_case(orch)
 
     outcome = board.review_case(case.id)
-    assert outcome.applied is True
-    assert outcome.final_status is ReturnStatus.REJECTED
+    assert outcome.applied is False
+    assert outcome.final_status is ReturnStatus.MANUAL_REVIEW
+    # The board's advice is still recorded for the human reviewer.
+    saved = orch.store.get(case.id)
+    assert len(saved.agent_assessments) == 3
+    assert any(e.event == "verdict_reject" for e in saved.events)
 
 
 def test_specialist_disagreement_forces_human(orch):

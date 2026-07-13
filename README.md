@@ -58,11 +58,13 @@ Cases in `manual_review` can be worked by an LLM review board
 **customer experience advocate** run in parallel, then a **lead reviewer**
 synthesizes a verdict plus a drafted customer message.
 
-Guardrails: the board only sees rule-engine escalations, acts through the
-same state machine as human agents, and auto-applies only when confidence
-clears the threshold (default 0.75), no specialist hard-disagrees, and the
-verdict isn't an escalation — otherwise the case stays in `manual_review`
-with the assessments attached as advice. Customer free text is fenced as
+Guardrails: the board only sees rule-engine escalations and acts through
+the same state machine as human agents. Auto-apply is **asymmetric by
+design**: only approvals are ever auto-applied (a wrong approval costs one
+bounded refund; a wrong rejection costs a customer), and only when
+confidence clears the threshold (default 0.75) and no specialist
+hard-disagrees. Rejections and escalations always stay in `manual_review`
+with the board's assessments attached as advice for the human. Customer free text is fenced as
 untrusted data in every prompt. Token/latency usage is reported per review
 and in `/metrics`. Uses OpenAI `gpt-4o-mini` behind an injected `LLMClient`
 protocol with retries; tests run on fakes, no API key needed.
