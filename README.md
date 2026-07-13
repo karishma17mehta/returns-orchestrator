@@ -88,6 +88,17 @@ flows through the normal state machine and audit trail.
   0.75) and no specialist hard-disagrees.
 - Customer free text is fenced as untrusted data in every prompt.
 
+**Policy grounding:** the compliance agent judges strictly against an
+objective policy determination (`policy.policy_facts` — age vs window+grace,
+condition, receipt, final-sale, computed the same way the engine resolves
+terms) plus retrieved brand excerpts, and its prompt forbids weighing item
+price or goodwill (that's the CX agent's job). This closed a real failure
+mode found by the live sweep: the board had been unanimously auto-approving
+cheap policy-ineligible returns on goodwill. On the same 30-case sample,
+false auto-approvals of ineligible returns dropped from **3 to 0** (the only
+remaining auto-approval is a genuinely borderline `needs_review` case).
+Re-check with `python scripts/eval_triage.py --board --sample 30`.
+
 **Structured outputs:** every LLM call uses OpenAI structured outputs
 (`chat.completions.parse` with a pydantic schema), so malformed JSON isn't
 a failure mode — there is no hand-rolled parsing/repair. The `LLMClient` is
