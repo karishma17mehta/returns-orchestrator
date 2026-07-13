@@ -56,10 +56,10 @@ jobs:
             echo "OPENAI_API_KEY secret not set — skipping board sweep."
             exit 0
           fi
-          # Tolerance of 1 absorbs LLM nondeterminism at 50 samples; the
-          # regression this guards against was ~10% false approvals (≈5/50),
-          # so a real regression still trips it.
+          # Post-hardening sweeps showed 0 ineligible auto-approvals across
+          # 130 sampled cases (30 + 100), so 0 is the evidence-backed gate;
+          # the pre-fix regression was ~10% (3/30), which trips it loudly.
           python scripts/eval_triage.py --board \
             --sample "${{ github.event.inputs.board_sample || '50' }}" \
             --threshold 0.75 \
-            --max-board-false-approvals 1
+            --max-board-false-approvals 0

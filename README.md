@@ -50,6 +50,9 @@ instead of auto-rejecting. Reproduce with `python scripts/eval_triage.py`
 (add `--board --sample 20` to also run the LLM board; needs
 `OPENAI_API_KEY`).
 
+These invariants are enforced in CI (see below), so a change that starts
+auto-approving ineligible returns fails the build.
+
 ## Multi-agent review board (LangGraph)
 
 Cases in `manual_review` can be worked by an LLM review board
@@ -95,9 +98,11 @@ terms) plus retrieved brand excerpts, and its prompt forbids weighing item
 price or goodwill (that's the CX agent's job). This closed a real failure
 mode found by the live sweep: the board had been unanimously auto-approving
 cheap policy-ineligible returns on goodwill. On the same 30-case sample,
-false auto-approvals of ineligible returns dropped from **3 to 0** (the only
-remaining auto-approval is a genuinely borderline `needs_review` case).
-Re-check with `python scripts/eval_triage.py --board --sample 30`.
+false auto-approvals of ineligible returns dropped from **3 to 0**, and a
+follow-up **100-case sweep held at 0** (95 reject / 5 escalate / 0 approve —
+the board defers every hard escalation to a human rather than auto-approving
+against policy). Re-check with `python scripts/eval_triage.py --board
+--sample 100`.
 
 **Structured outputs:** every LLM call uses OpenAI structured outputs
 (`chat.completions.parse` with a pydantic schema), so malformed JSON isn't
@@ -156,7 +161,7 @@ swap in EasyPost/Stripe/your OMS without touching workflow logic.
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -e ".[dev]"
-.venv/bin/pytest                          # 74 tests, no network needed
+.venv/bin/pytest                          # 78 tests, no network needed
 .venv/bin/uvicorn app.main:app --reload   # docs at http://localhost:8000/docs
 ```
 
@@ -167,3 +172,26 @@ Configuration comes from the environment or a `.env` file (see
 `LOG_LEVEL` — plus `RETURNS_API_KEYS` and `CARRIER_WEBHOOK_SECRET` (auth,
 read per-request), `OPENAI_API_KEY` (enables the board), and
 `LANGSMITH_TRACING` / `LANGSMITH_API_KEY` (optional tracing).
+
+## CI regression gate
+
+`.github/workflows/ci.yml` runs on every push/PR:
+
+- **`test`** (always, offline, no key) — the unit suite plus the rule-engine
+  regression gate:
+  ```bash
+  python scripts/eval_triage.py --min-accuracy 0.85 \
+      --max-false-approvals 0 --max-false-rejections 0
+  ```
+  The same invariants are asserted as unit tests in `tests/test_eval_gate.py`.
+- **`board-sweep`** (push to main / manual dispatch, only when the
+  `OPENAI_API_KEY` secret is set) — runs the LLM board over a sample and
+  fails if it would auto-apply too many policy-ineligible approvals:
+  ```bash
+  python scripts/eval_triage.py --board --sample 50 \
+      --threshold 0.75 --max-board-false-approvals 0
+  ```
+  (0 ineligible auto-approvals held across 130 sampled cases post-hardening.)
+
+The eval script exits non-zero when any bound is violated, so it doubles as
+a local pre-commit check.
