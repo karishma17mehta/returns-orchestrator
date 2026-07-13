@@ -1,0 +1,121 @@
+brand,category,return_window_days,final_sale,requires_receipt,restock_fee,notes
+H&M,Tops,30,False,True,0.0,Standard
+H&M,Dresses,30,False,True,0.0,Standard
+H&M,Jeans,30,False,True,0.0,Standard
+H&M,Activewear,30,False,True,0.0,Standard
+H&M,Outerwear,30,False,True,0.0,Standard
+H&M,Footwear,30,False,True,0.0,Standard
+H&M,Accessories,30,False,True,0.0,Standard
+H&M,Bags,30,False,True,0.0,Standard
+H&M,Swimwear,30,False,True,0.0,Standard
+H&M,Lingerie,30,False,True,0.0,Standard
+H&M,Beauty,30,True,True,0.0,Standard
+H&M,Home,30,False,True,0.0,Standard
+Zara,Tops,30,False,True,0.0,Standard
+Zara,Dresses,30,False,True,0.0,Standard
+Zara,Jeans,30,False,True,0.0,Standard
+Zara,Activewear,30,False,True,0.0,Standard
+Zara,Outerwear,30,False,True,0.0,Standard
+Zara,Footwear,30,False,True,0.0,Standard
+Zara,Accessories,30,False,True,0.0,Standard
+Zara,Bags,30,False,True,0.0,Standard
+Zara,Swimwear,30,False,True,0.0,Standard
+Zara,Lingerie,30,False,True,0.0,Standard
+Zara,Beauty,30,True,True,0.0,Standard
+Zara,Home,30,False,True,0.0,Standard
+Shein,Tops,30,False,True,0.0,Standard
+Shein,Dresses,30,False,True,0.0,Standard
+Shein,Jeans,30,False,True,0.0,Standard
+Shein,Activewear,30,False,True,0.0,Standard
+Shein,Outerwear,30,False,True,0.0,Standard
+Shein,Footwear,30,False,True,0.0,Standard
+Shein,Accessories,30,False,True,0.0,Standard
+Shein,Bags,30,False,True,0.0,Standard
+Shein,Swimwear,30,False,True,0.0,Standard
+Shein,Lingerie,30,False,True,0.0,Standard
+Shein,Beauty,30,True,True,0.0,Standard
+Shein,Home,30,False,True,0.0,Standard
+Urban Outfitters,Tops,30,False,True,0.0,Standard
+Urban Outfitters,Dresses,30,False,True,0.0,Standard
+Urban Outfitters,Jeans,30,False,True,0.0,Standard
+Urban Outfitters,Activewear,30,False,True,0.0,Standard
+Urban Outfitters,Outerwear,30,False,True,0.0,Standard
+Urban Outfitters,Footwear,30,False,True,0.0,Standard
+Urban Outfitters,Accessories,30,False,True,0.0,Standard
+Urban Outfitters,Bags,30,False,True,0.0,Standard
+Urban Outfitters,Swimwear,30,False,True,0.0,Standard
+Urban Outfitters,Lingerie,30,False,True,0.0,Standard
+Urban Outfitters,Beauty,30,True,True,0.0,Standard
+Urban Outfitters,Home,30,False,True,0.0,Standard
+Under Armour,Tops,60,False,True,0.0,Standard
+Under Armour,Dresses,60,False,True,0.0,Standard
+Under Armour,Jeans,60,False,True,0.0,Standard
+Under Armour,Activewear,60,False,True,0.0,Standard
+Under Armour,Outerwear,60,False,True,0.0,Standard
+Under Armour,Footwear,60,False,True,0.0,Standard
+Under Armour,Accessories,60,False,True,0.0,Standard
+Under Armour,Bags,60,False,True,0.0,Standard
+Under Armour,Swimwear,60,False,True,0.0,Standard
+Under Armour,Lingerie,60,False,True,0.0,Standard
+Under Armour,Beauty,60,True,True,0.0,Standard
+Under Armour,Home,60,False,True,0.0,Standard
+Girlfriend Collective,Tops,30,False,True,0.0,Standard
+Girlfriend Collective,Dresses,30,False,True,0.0,Standard
+Girlfriend Collective,Jeans,30,False,True,0.0,Standard
+Girlfriend Collective,Activewear,30,False,True,0.0,Standard
+Girlfriend Collective,Outerwear,30,False,True,0.0,Standard
+Girlfriend Collective,Footwear,30,False,True,0.0,Standard
+Girlfriend Collective,Accessories,30,False,True,0.0,Standard
+Girlfriend Collective,Bags,30,False,True,0.0,Standard
+Girlfriend Collective,Swimwear,30,False,True,0.0,Standard
+Girlfriend Collective,Lingerie,30,False,True,0.0,Standard
+Girlfriend Collective,Beauty,30,True,True,0.0,Standard
+Girlfriend Collective,Home,30,False,True,0.0,Standard
+Chanel,Tops,14,False,True,0.0,Luxury 14-day
+Chanel,Dresses,14,False,True,0.0,Luxury 14-day
+Chanel,Jeans,14,False,True,0.0,Luxury 14-day
+Chanel,Activewear,14,False,True,0.0,Luxury 14-day
+Chanel,Outerwear,14,False,True,0.0,Luxury 14-day
+Chanel,Footwear,14,False,True,0.0,Luxury 14-day
+Chanel,Accessories,14,False,True,0.0,Luxury 14-day
+Chanel,Bags,14,False,True,0.0,Luxury 14-day
+Chanel,Swimwear,14,False,True,0.0,Luxury 14-day
+Chanel,Lingerie,14,False,True,0.0,Luxury 14-day
+Chanel,Beauty,14,True,True,0.0,Luxury 14-day
+Chanel,Home,14,False,True,0.0,Luxury 14-day
+Gucci,Tops,14,False,True,0.0,Luxury 14-day
+Gucci,Dresses,14,False,True,0.0,Luxury 14-day
+Gucci,Jeans,14,False,True,0.0,Luxury 14-day
+Gucci,Activewear,14,False,True,0.0,Luxury 14-day
+Gucci,Outerwear,14,False,True,0.0,Luxury 14-day
+Gucci,Footwear,14,False,True,0.0,Luxury 14-day
+Gucci,Accessories,14,False,True,0.0,Luxury 14-day
+Gucci,Bags,14,False,True,0.0,Luxury 14-day
+Gucci,Swimwear,14,False,True,0.0,Luxury 14-day
+Gucci,Lingerie,14,False,True,0.0,Luxury 14-day
+Gucci,Beauty,14,True,True,0.0,Luxury 14-day
+Gucci,Home,14,False,True,0.0,Luxury 14-day
+Prada,Tops,14,False,True,0.0,Luxury 14-day
+Prada,Dresses,14,False,True,0.0,Luxury 14-day
+Prada,Jeans,14,False,True,0.0,Luxury 14-day
+Prada,Activewear,14,False,True,0.0,Luxury 14-day
+Prada,Outerwear,14,False,True,0.0,Luxury 14-day
+Prada,Footwear,14,False,True,0.0,Luxury 14-day
+Prada,Accessories,14,False,True,0.0,Luxury 14-day
+Prada,Bags,14,False,True,0.0,Luxury 14-day
+Prada,Swimwear,14,False,True,0.0,Luxury 14-day
+Prada,Lingerie,14,False,True,0.0,Luxury 14-day
+Prada,Beauty,14,True,True,0.0,Luxury 14-day
+Prada,Home,14,False,True,0.0,Luxury 14-day
+Loewe,Tops,14,False,True,0.0,Luxury 14-day
+Loewe,Dresses,14,False,True,0.0,Luxury 14-day
+Loewe,Jeans,14,False,True,0.0,Luxury 14-day
+Loewe,Activewear,14,False,True,0.0,Luxury 14-day
+Loewe,Outerwear,14,False,True,0.0,Luxury 14-day
+Loewe,Footwear,14,False,True,0.0,Luxury 14-day
+Loewe,Accessories,14,False,True,0.0,Luxury 14-day
+Loewe,Bags,14,False,True,0.0,Luxury 14-day
+Loewe,Swimwear,14,False,True,0.0,Luxury 14-day
+Loewe,Lingerie,14,False,True,0.0,Luxury 14-day
+Loewe,Beauty,14,True,True,0.0,Luxury 14-day
+Loewe,Home,14,False,True,0.0,Luxury 14-day

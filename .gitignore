@@ -7,3 +7,4 @@ returns.db
 .DS_Store
 .env
 returns_graph.db
+*.egg-info/
