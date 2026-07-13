@@ -5,3 +5,4 @@ __pycache__/
 *.pyc
 returns.db
 .DS_Store
+.env
