@@ -134,10 +134,18 @@ def run_rule_engine_eval(rows: list[dict], customers: dict) -> list[tuple[dict, 
         cells = " ".join(f"{confusion[(label, s)]:>14}" for s in statuses)
         print(f"{label:>20} {cells}")
     print()
-    return results
+    metrics = {
+        "n": n,
+        "accuracy": correct / n,
+        # The two dangerous cells: auto-approving a policy-ineligible return,
+        # or auto-rejecting a genuinely eligible one.
+        "false_approvals": confusion[("ineligible", "approved")],
+        "false_rejections": confusion[("eligible", "rejected")],
+    }
+    return results, metrics
 
 
-def run_board_eval(results, customers, sample_n: int) -> None:
+def run_board_eval(results, customers, sample_n: int, threshold: float = 0.75) -> dict:
     from app.agents import OpenAIClient, ReviewBoard
     from app.agents.retriever import LexicalPolicyRetriever
     from app.orchestrator import ReturnsOrchestrator
@@ -168,7 +176,7 @@ def run_board_eval(results, customers, sample_n: int) -> None:
     )
     orch = ReturnsOrchestrator(store, policy=policy, catalog=catalog)
     llm = OpenAIClient()
-    board = ReviewBoard(orch, llm, retriever=retriever)
+    board = ReviewBoard(orch, llm, retriever=retriever, confidence_threshold=threshold)
 
     verdicts = Counter()
     results_board: list[tuple[str, str, float]] = []  # (label, decision, derived)
@@ -204,33 +212,98 @@ def run_board_eval(results, customers, sample_n: int) -> None:
     print("\nAuto-apply calibration (approvals only):")
     print(f"{'threshold':>10} {'auto-applied':>13} {'eligible':>9} "
           f"{'needs_review':>13} {'ineligible':>11}")
+    false_at_threshold = 0
     for t in [0.5, 0.6, 0.7, 0.75, 0.8, 0.9, 1.0]:
         cleared = [
             (label, dec) for label, dec, conf in results_board
             if dec == "approve" and conf >= t
         ]
         by_label = Counter(label for label, _dec in cleared)
+        if t == threshold:
+            false_at_threshold = by_label.get("ineligible", 0)
         print(
             f"{t:>10.2f} {len(cleared):>13} {by_label.get('eligible', 0):>9} "
             f"{by_label.get('needs_review', 0):>13} "
             f"{by_label.get('ineligible', 0):>11}"
         )
+    return {
+        "sample": len(sample),
+        "verdicts": dict(verdicts),
+        # The regression-gate metric: policy-ineligible returns that would be
+        # AUTO-APPLIED at the production threshold.
+        "false_auto_approvals": false_at_threshold,
+        "threshold": threshold,
+    }
 
 
-def main() -> None:
+def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--board", action="store_true", help="also run the LLM review board")
     parser.add_argument("--sample", type=int, default=10, help="rows to sample for --board")
+    parser.add_argument("--threshold", type=float, default=0.75,
+                        help="board auto-apply confidence threshold")
+    # Regression-gate assertions: exit non-zero when a bound is violated.
+    parser.add_argument("--min-accuracy", type=float, default=None,
+                        help="fail if rule-engine accuracy is below this")
+    parser.add_argument("--max-false-approvals", type=int, default=None,
+                        help="fail if rule-engine ineligible->approved exceeds this")
+    parser.add_argument("--max-false-rejections", type=int, default=None,
+                        help="fail if rule-engine eligible->rejected exceeds this")
+    parser.add_argument("--max-board-false-approvals", type=int, default=None,
+                        help="fail if the board would auto-apply more than this many "
+                             "ineligible approvals (requires --board)")
     args = parser.parse_args()
 
     rows = load_rows()
     customers = load_customers()
     print(f"{len(rows)} labeled rows, labels: {Counter(r['label'] for r in rows)}")
-    results = run_rule_engine_eval(rows, customers)
+    results, metrics = run_rule_engine_eval(rows, customers)
+
+    failures: list[str] = []
+    if args.min_accuracy is not None and metrics["accuracy"] < args.min_accuracy:
+        failures.append(
+            f"accuracy {metrics['accuracy']:.3f} < required {args.min_accuracy}"
+        )
+    if args.max_false_approvals is not None and (
+        metrics["false_approvals"] > args.max_false_approvals
+    ):
+        failures.append(
+            f"rule-engine false approvals {metrics['false_approvals']} "
+            f"> allowed {args.max_false_approvals}"
+        )
+    if args.max_false_rejections is not None and (
+        metrics["false_rejections"] > args.max_false_rejections
+    ):
+        failures.append(
+            f"rule-engine false rejections {metrics['false_rejections']} "
+            f"> allowed {args.max_false_rejections}"
+        )
 
     if args.board:
-        run_board_eval(results, customers, args.sample)
+        board_metrics = run_board_eval(
+            results, customers, args.sample, threshold=args.threshold
+        )
+        if args.max_board_false_approvals is not None and (
+            board_metrics["false_auto_approvals"] > args.max_board_false_approvals
+        ):
+            failures.append(
+                f"board false auto-approvals {board_metrics['false_auto_approvals']} "
+                f"> allowed {args.max_board_false_approvals}"
+            )
+
+    if failures:
+        print("\nEVAL GATE FAILED:")
+        for f in failures:
+            print(f"  ✗ {f}")
+        return 1
+    print("\nEVAL GATE PASSED" if any(
+        v is not None for v in (
+            args.min_accuracy, args.max_false_approvals,
+            args.max_false_rejections, args.max_board_false_approvals,
+        )
+    ) else "")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
