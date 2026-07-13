@@ -6,8 +6,12 @@ on:
   pull_request:
   workflow_dispatch:
     inputs:
+      run_board_sweep:
+        description: "Run the paid LLM board sweep (uses OPENAI_API_KEY)"
+        type: boolean
+        default: false
       board_sample:
-        description: "Board sweep sample size (needs OPENAI_API_KEY secret)"
+        description: "Board sweep sample size"
         default: "50"
 
 jobs:
@@ -33,12 +37,15 @@ jobs:
             --max-false-approvals 0 \
             --max-false-rejections 0
 
-  # Costs money + needs a secret, so it does not gate PRs from forks.
-  # Runs on manual dispatch and on pushes to main when the secret exists.
+  # Costs money (real LLM calls), so it NEVER runs automatically. Trigger it
+  # deliberately: Actions tab -> CI -> "Run workflow" -> tick "Run the paid
+  # LLM board sweep". Push/PR events skip this job entirely.
   board-sweep:
     runs-on: ubuntu-latest
     needs: test
-    if: github.event_name == 'workflow_dispatch' || github.event_name == 'push'
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      github.event.inputs.run_board_sweep == 'true'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

@@ -184,9 +184,10 @@ read per-request), `OPENAI_API_KEY` (enables the board), and
       --max-false-approvals 0 --max-false-rejections 0
   ```
   The same invariants are asserted as unit tests in `tests/test_eval_gate.py`.
-- **`board-sweep`** (push to main / manual dispatch, only when the
-  `OPENAI_API_KEY` secret is set) — runs the LLM board over a sample and
-  fails if it would auto-apply too many policy-ineligible approvals:
+- **`board-sweep`** (manual only — never runs automatically) — trigger it
+  from the Actions tab → CI → **Run workflow** → tick *Run the paid LLM
+  board sweep*. Uses the `OPENAI_API_KEY` secret, runs the LLM board over a
+  sample, and fails if it would auto-apply any policy-ineligible approval:
   ```bash
   python scripts/eval_triage.py --board --sample 50 \
       --threshold 0.75 --max-board-false-approvals 0
