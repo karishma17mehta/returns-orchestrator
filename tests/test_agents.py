@@ -271,6 +271,30 @@ def test_policy_agent_includes_retrieved_excerpts(orch):
     assert "policy excerpts" in user
 
 
+def test_policy_agent_surfaces_hard_disqualifier(orch):
+    from app.models import ItemCondition, ReturnReason
+
+    # Worn item on a merchant-fault reason: engine escalates, but the policy
+    # agent must SEE the condition disqualifier in its evidence.
+    register_order(orch, order_id="ord_worn")
+    case = orch.create_return(
+        make_request(
+            order_id="ord_worn",
+            condition=ItemCondition.DAMAGED,
+            reason=ReturnReason.DEFECTIVE,
+        )
+    )
+    assert case.status is ReturnStatus.MANUAL_REVIEW
+    llm = FakeLLM({"policy compliance": spec("reject")})
+    agent = PolicyComplianceAgent(llm, catalog=orch.catalog)
+    agent.assess(case, orch.policy)
+    _system, user = llm.calls[0]
+    assert "HARD DISQUALIFIERS" in user
+    assert "not resellable" in user
+    # The prompt forbids approving on low-value/goodwill grounds.
+    assert "Low item value is NOT a reason to approve" in _system
+
+
 def test_lexical_retriever_ranks_and_filters_by_brand():
     chunks = [
         {"text": "Gucci bags may be returned within 14 days with receipt.", "brand": "Gucci"},

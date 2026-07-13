@@ -100,6 +100,56 @@ class Decision:
     policy_snapshot: dict = field(default_factory=dict)
 
 
+def policy_facts(case: ReturnCase, policy: ReturnPolicy, catalog: PolicyCatalog) -> dict:
+    """Objective, per-case policy determination — the hard facts a compliance
+    reviewer needs, computed the same way the engine resolves terms. This is
+    NOT a verdict: it states what the written policy says and which
+    disqualifiers are present, leaving the accept/exception judgment to the
+    caller. Shared by the engine's snapshot and the policy-compliance agent
+    so the agent judges against facts instead of re-deriving them from prose."""
+    resolved = {
+        (line.brand, line.category): catalog.resolve(line.brand, line.category, policy)
+        for line in case.items
+    }
+    window = min(bp.return_window_days for bp in resolved.values())
+    requires_receipt = any(bp.requires_receipt for bp in resolved.values())
+    final_sale_lines = [
+        line.sku for line in case.items
+        if resolved[(line.brand, line.category)].final_sale
+    ]
+
+    order_date = case.order_date
+    if order_date.tzinfo is None:
+        order_date = order_date.replace(tzinfo=timezone.utc)
+    age_days = (datetime.now(timezone.utc) - order_date).days
+    grace = policy.grace_period_days
+
+    disqualifiers = []
+    if final_sale_lines:
+        disqualifiers.append(f"final-sale/non-returnable category ({', '.join(final_sale_lines)})")
+    if case.item_condition in (ItemCondition.WORN, ItemCondition.DAMAGED):
+        disqualifiers.append(f"item condition is '{case.item_condition.value}' (not resellable)")
+    if age_days > window + grace:
+        disqualifiers.append(f"{age_days} days is beyond the {window}-day window + {grace}-day grace")
+    elif age_days > window:
+        disqualifiers.append(f"{age_days} days is past the {window}-day window (within grace)")
+    if requires_receipt and not case.has_receipt:
+        disqualifiers.append("receipt required but not provided")
+
+    return {
+        "window_days": window,
+        "grace_days": grace,
+        "age_days": age_days,
+        "within_window": age_days <= window,
+        "requires_receipt": requires_receipt,
+        "has_receipt": case.has_receipt,
+        "item_condition": case.item_condition.value,
+        "reason_is_merchant_fault": case.reason in MERCHANT_FAULT_REASONS,
+        "final_sale_skus": final_sale_lines,
+        "hard_disqualifiers": disqualifiers,
+    }
+
+
 def evaluate(case: ReturnCase, policy: ReturnPolicy, catalog: PolicyCatalog) -> Decision:
     """Evaluate a resolved return case. `case.items` must already be resolved
     against the registered order (brand/category/prices present)."""

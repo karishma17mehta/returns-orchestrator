@@ -159,7 +159,14 @@ def run_board_eval(results, customers, sample_n: int) -> None:
         else None
     )
     store = ReturnStore(":memory:")
-    orch = ReturnsOrchestrator(store)
+    # Same catalog + threshold-free policy the rule-engine eval used, so the
+    # board's policy determination matches the dataset's label logic.
+    catalog = PolicyCatalog.from_csv(str(DATASET / "policies_map.csv"))
+    policy = ReturnPolicy(
+        manual_review_value_threshold=float("inf"),
+        manual_review_return_rate=1.1,
+    )
+    orch = ReturnsOrchestrator(store, policy=policy, catalog=catalog)
     llm = OpenAIClient()
     board = ReviewBoard(orch, llm, retriever=retriever)
 
@@ -167,8 +174,13 @@ def run_board_eval(results, customers, sample_n: int) -> None:
     results_board: list[tuple[str, str, float]] = []  # (label, decision, derived)
     for i, (row, _status) in enumerate(sample, 1):
         case = row_to_case(row, customers)
+        # Populate the real engine determination (decision_notes +
+        # policy_snapshot) so the board sees exactly what it would in
+        # production, not a stub.
+        decision = evaluate(case, orch.policy, orch.catalog)
+        case.decision_notes = decision.notes
+        case.policy_snapshot = decision.policy_snapshot
         case.status = ReturnStatus.MANUAL_REVIEW
-        case.decision_notes = ["manual review (dataset eval)"]
         store.save(case)
         outcome = board.review_case(case.id, auto_apply=False)
         verdicts[outcome.verdict.decision.value] += 1

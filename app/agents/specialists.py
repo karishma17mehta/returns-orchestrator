@@ -21,7 +21,7 @@ from typing import Protocol
 from pydantic import BaseModel, Field
 
 from ..models import ReturnCase
-from ..policy import ReturnPolicy
+from ..policy import PolicyCatalog, ReturnPolicy, policy_facts
 from .llm import LLMClient
 
 
@@ -138,21 +138,53 @@ request looks legitimate."""
 
 class PolicyComplianceAgent(SpecialistAgent):
     name = "policy_compliance"
-    role_prompt = """You are a returns policy compliance specialist. Judge whether
-this return should be accepted under the merchant policy and any brand policy
-excerpts provided. Consider the return window, category restrictions, receipt
-and condition requirements, and whether merchant-fault reasons (defective,
-wrong item, not as described) justify an exception. Recommend based on what
-the written policy supports, not sentiment."""
+    role_prompt = """You are a returns policy compliance specialist. Answer ONE
+question strictly: does the WRITTEN policy permit this return? Judge only
+against the policy determination and brand excerpts provided.
 
-    def __init__(self, llm: LLMClient, retriever: PolicyRetriever | None = None):
+Rules:
+- If the determination lists ANY hard disqualifier (final sale, item worn or
+  damaged, beyond the window+grace period, missing a required receipt),
+  recommend 'reject' — the written policy does not permit the return.
+- A merchant-fault reason (defective, wrong item, not as described) does not
+  by itself waive a disqualifier; when such a reason conflicts with a
+  disqualifier and would need a manager's exception, recommend 'escalate',
+  not 'approve'.
+- Do NOT weigh customer goodwill, lifetime value, item price, or retention —
+  that is another reviewer's job. Low item value is NOT a reason to approve.
+- Recommend 'approve' only when the determination shows no hard disqualifier."""
+
+    def __init__(
+        self,
+        llm: LLMClient,
+        retriever: PolicyRetriever | None = None,
+        catalog: PolicyCatalog | None = None,
+    ):
         super().__init__(llm)
         self.retriever = retriever
+        self.catalog = catalog or PolicyCatalog()
 
     def evidence(self, case: ReturnCase, policy: ReturnPolicy) -> str:
         base = describe_case(case, policy)
+        facts = policy_facts(case, policy, self.catalog)
+        disq = facts["hard_disqualifiers"]
+        disq_text = (
+            "\n".join(f"  - {d}" for d in disq)
+            if disq
+            else "  (none — no hard disqualifier present)"
+        )
+        facts_block = (
+            f"\n\nObjective policy determination:\n"
+            f"  window: {facts['window_days']} days (+ {facts['grace_days']}-day grace); "
+            f"item is {facts['age_days']} days old; within_window={facts['within_window']}\n"
+            f"  condition: {facts['item_condition']}; "
+            f"receipt required={facts['requires_receipt']}, provided={facts['has_receipt']}\n"
+            f"  reason is merchant-fault: {facts['reason_is_merchant_fault']}\n"
+            f"  HARD DISQUALIFIERS:\n{disq_text}"
+        )
+        block = base + facts_block
         if self.retriever is None:
-            return base
+            return block
         brands = sorted({i.brand for i in case.items})
         query = (
             f"return policy {' '.join(i.category for i in case.items)} "
@@ -160,9 +192,9 @@ the written policy supports, not sentiment."""
         )
         excerpts = self.retriever(query, brands)
         if not excerpts:
-            return base
+            return block
         joined = "\n\n".join(f"[{n+1}] {e}" for n, e in enumerate(excerpts))
-        return f"{base}\n\nRelevant brand policy excerpts:\n{joined}"
+        return f"{block}\n\nRelevant brand policy excerpts:\n{joined}"
 
 
 class CustomerExperienceAgent(SpecialistAgent):

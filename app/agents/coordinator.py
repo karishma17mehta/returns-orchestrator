@@ -135,7 +135,9 @@ class ReviewBoard:
         self.llm = llm
         self.specialists = specialists or [
             FraudAnalystAgent(llm),
-            PolicyComplianceAgent(llm, retriever=retriever),
+            PolicyComplianceAgent(
+                llm, retriever=retriever, catalog=orchestrator.catalog
+            ),
             CustomerExperienceAgent(llm),
         ]
         self.confidence_threshold = confidence_threshold
