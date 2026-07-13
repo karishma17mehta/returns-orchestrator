@@ -1,8 +1,9 @@
 """Shared fixtures: an orchestrator with a registered order/customer."""
 import os
 
-# Keep `import app.main` in tests from creating a real returns.db file.
+# Keep `import app.main` in tests from creating real db files.
 os.environ.setdefault("RETURNS_DB", ":memory:")
+os.environ.setdefault("RETURNS_GRAPH_DB", ":memory:")
 
 from datetime import datetime, timedelta, timezone
 

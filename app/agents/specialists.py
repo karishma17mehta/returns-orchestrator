@@ -16,9 +16,9 @@ its answer — any callable `(query, brands) -> list[str]` works.
 from __future__ import annotations
 
 import enum
-from typing import Callable, Protocol
+from typing import Protocol
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field
 
 from ..models import ReturnCase
 from ..policy import ReturnPolicy
@@ -31,11 +31,30 @@ class Recommendation(str, enum.Enum):
     ESCALATE = "escalate"
 
 
+class AssessmentPayload(BaseModel):
+    """Schema enforced by the LLM API (structured outputs). Constraint-free
+    on purpose — strict schema mode doesn't support numeric bounds, so
+    confidence is clamped when the assessment is built."""
+
+    recommendation: Recommendation
+    confidence: float
+    rationale: str
+
+
 class AgentAssessment(BaseModel):
     agent: str
     recommendation: Recommendation
     confidence: float = Field(ge=0.0, le=1.0)
     rationale: str
+
+    @classmethod
+    def from_payload(cls, agent: str, payload: AssessmentPayload) -> "AgentAssessment":
+        return cls(
+            agent=agent,
+            recommendation=payload.recommendation,
+            confidence=min(max(payload.confidence, 0.0), 1.0),
+            rationale=payload.rationale,
+        )
 
 
 class PolicyRetriever(Protocol):
@@ -81,10 +100,7 @@ Rule-engine notes:
 </customer_text>"""
 
 
-_OUTPUT_SPEC = """Respond with a JSON object:
-{"recommendation": "approve" | "reject" | "escalate",
- "confidence": <0.0-1.0>,
- "rationale": "<2-3 sentences citing the specific evidence>"}
+_OUTPUT_SPEC = """Give 2-3 sentences of rationale citing the specific evidence.
 Use "escalate" when the evidence is genuinely ambiguous or you lack the
 information to decide."""
 
@@ -100,21 +116,12 @@ class SpecialistAgent:
         return describe_case(case, policy)
 
     def assess(self, case: ReturnCase, policy: ReturnPolicy) -> AgentAssessment:
-        raw = self.llm.complete_json(
+        payload = self.llm.complete(
             system=f"{self.role_prompt}\n\n{_UNTRUSTED_NOTE}\n\n{_OUTPUT_SPEC}",
             user=self.evidence(case, policy),
+            output_model=AssessmentPayload,
         )
-        try:
-            return AgentAssessment(agent=self.name, **raw)
-        except ValidationError:
-            # A malformed response from one specialist must not sink the
-            # whole board; surface it as a low-confidence escalation.
-            return AgentAssessment(
-                agent=self.name,
-                recommendation=Recommendation.ESCALATE,
-                confidence=0.0,
-                rationale=f"unparseable model output: {raw!r}"[:500],
-            )
+        return AgentAssessment.from_payload(self.name, payload)
 
 
 class FraudAnalystAgent(SpecialistAgent):

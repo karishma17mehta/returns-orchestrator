@@ -1,32 +1,46 @@
-"""Multi-agent review board tests, using a scripted fake LLM."""
+"""Multi-agent review board tests (LangGraph workflow), using a fake LLM."""
 import pytest
 
 from app.agents import ReviewBoard
+from app.agents.coordinator import derive_confidence
 from app.agents.retriever import LexicalPolicyRetriever
-from app.agents.specialists import PolicyComplianceAgent, Recommendation
+from app.agents.specialists import (
+    AgentAssessment,
+    PolicyComplianceAgent,
+    Recommendation,
+)
 from app.models import ReturnStatus
+from app.orchestrator import TransitionError
 from tests.conftest import make_request, register_order
 
 
 class FakeLLM:
-    """Returns queued JSON responses; records prompts. Keyed by role so
-    parallel specialist execution can't scramble the ordering."""
+    """Returns scripted responses keyed by role; records prompts.
+    Structured like the real client: `complete()` returns an instance of
+    the requested output model."""
 
     def __init__(self, by_role: dict[str, dict], lead: dict | None = None):
         self.by_role = dict(by_role)
         self.lead = lead
         self.calls: list[tuple[str, str]] = []
 
-    def complete_json(self, system: str, user: str) -> dict:
+    def complete(self, system: str, user: str, output_model):
         self.calls.append((system, user))
         if "lead reviewer" in system:
             if self.lead is None:
                 raise AssertionError("unexpected lead reviewer call")
-            return self.lead
-        for marker, response in self.by_role.items():
-            if marker in system:
-                return response
-        raise AssertionError(f"no scripted response for system prompt: {system[:80]}")
+            data = self.lead
+        else:
+            data = None
+            for marker, response in self.by_role.items():
+                if marker in system:
+                    data = response
+                    break
+            if data is None:
+                raise AssertionError(f"no scripted response for: {system[:80]}")
+        if isinstance(data, Exception):
+            raise data
+        return output_model(**data)
 
 
 def spec(rec: str, conf: float = 0.9, why: str = "because") -> dict:
@@ -54,13 +68,43 @@ def fake_llm(fraud="approve", policy="approve", cx="approve", verdict="approve",
     )
 
 
-def make_review_case(orch):
+def make_review_case(orch, order_id="ord_1001"):
     """A high-value return that the rule engine sends to manual review."""
-    register_order(orch, unit_price=750.0)
-    case = orch.create_return(make_request())
+    register_order(orch, order_id=order_id, unit_price=750.0)
+    case = orch.create_return(make_request(order_id=order_id))
     assert case.status is ReturnStatus.MANUAL_REVIEW
     return case
 
+
+# -- derived confidence -----------------------------------------------------------
+
+def _assessments(*recs):
+    return [
+        AgentAssessment(agent=f"a{i}", recommendation=r, confidence=0.9, rationale="x")
+        for i, r in enumerate(recs)
+    ]
+
+
+def test_derive_confidence_unanimous():
+    a = _assessments(*[Recommendation.APPROVE] * 3)
+    assert derive_confidence(Recommendation.APPROVE, a) == 1.0
+
+
+def test_derive_confidence_escalation_counts_half():
+    a = _assessments(
+        Recommendation.APPROVE, Recommendation.APPROVE, Recommendation.ESCALATE
+    )
+    assert derive_confidence(Recommendation.APPROVE, a) == pytest.approx(2.5 / 3)
+
+
+def test_derive_confidence_opposition_counts_zero():
+    a = _assessments(
+        Recommendation.APPROVE, Recommendation.REJECT, Recommendation.APPROVE
+    )
+    assert derive_confidence(Recommendation.APPROVE, a) == pytest.approx(2 / 3)
+
+
+# -- board flows ---------------------------------------------------------------
 
 def test_unanimous_approve_is_applied(orch):
     board = ReviewBoard(orch, fake_llm())
@@ -69,6 +113,9 @@ def test_unanimous_approve_is_applied(orch):
     outcome = board.review_case(case.id)
 
     assert outcome.applied is True
+    assert outcome.applied_by == "board"
+    assert outcome.pending_human is False
+    assert outcome.derived_confidence == 1.0
     assert outcome.final_status is ReturnStatus.LABEL_ISSUED
     assert len(outcome.assessments) == 3
     assert "duration_ms" in outcome.usage
@@ -80,64 +127,102 @@ def test_unanimous_approve_is_applied(orch):
     assert "verdict_approve" in kinds
 
 
-def test_reject_verdict_never_auto_applied(orch):
-    # Asymmetric guardrail: even a unanimous, high-confidence reject stays
-    # with a human — only approvals may be auto-applied.
+def test_reject_verdict_pauses_for_human(orch):
+    # Asymmetric guardrail: even a unanimous reject waits for a human.
     board = ReviewBoard(orch, fake_llm("reject", "reject", "reject", "reject"))
     case = make_review_case(orch)
 
     outcome = board.review_case(case.id)
     assert outcome.applied is False
+    assert outcome.pending_human is True
     assert outcome.final_status is ReturnStatus.MANUAL_REVIEW
-    # The board's advice is still recorded for the human reviewer.
     saved = orch.store.get(case.id)
-    assert len(saved.agent_assessments) == 3
-    assert any(e.event == "verdict_reject" for e in saved.events)
-
-
-def test_specialist_disagreement_forces_human(orch):
-    board = ReviewBoard(orch, fake_llm("approve", "reject", "approve", "approve"))
-    case = make_review_case(orch)
-
-    outcome = board.review_case(case.id)
-    assert outcome.applied is False
-    assert outcome.final_status is ReturnStatus.MANUAL_REVIEW
-
-
-def test_low_confidence_not_applied(orch):
-    board = ReviewBoard(
-        orch, fake_llm(verdict_conf=0.5), confidence_threshold=0.75
-    )
-    case = make_review_case(orch)
-
-    outcome = board.review_case(case.id)
-    assert outcome.applied is False
-    assert outcome.final_status is ReturnStatus.MANUAL_REVIEW
-
-
-def test_escalate_verdict_not_applied(orch):
-    board = ReviewBoard(orch, fake_llm(verdict="escalate"))
-    case = make_review_case(orch)
-
-    outcome = board.review_case(case.id)
-    assert outcome.applied is False
-    assert outcome.final_status is ReturnStatus.MANUAL_REVIEW
-
-
-def test_auto_apply_off_only_annotates(orch):
-    board = ReviewBoard(orch, fake_llm())
-    case = make_review_case(orch)
-
-    outcome = board.review_case(case.id, auto_apply=False)
-    assert outcome.applied is False
-    saved = orch.store.get(case.id)
-    assert saved.status is ReturnStatus.MANUAL_REVIEW
     assert len(saved.agent_assessments) == 3  # advice recorded for the human
 
 
-def test_malformed_specialist_output_degrades_to_escalation(orch):
+def test_resume_with_human_decision(orch):
+    board = ReviewBoard(orch, fake_llm("reject", "reject", "reject", "reject"))
+    case = make_review_case(orch)
+    assert board.review_case(case.id).pending_human is True
+
+    outcome = board.resume_review(case.id, approve=False, agent="cs-9", note="agreed")
+    assert outcome.applied is True
+    assert outcome.applied_by == "human:cs-9"
+    assert outcome.pending_human is False
+    assert outcome.final_status is ReturnStatus.REJECTED
+    # The human decision went through the orchestrator's audit trail.
+    saved = orch.store.get(case.id)
+    assert any(e.actor == "agent:cs-9" for e in saved.events)
+
+
+def test_resume_can_overrule_board(orch):
+    board = ReviewBoard(orch, fake_llm("reject", "reject", "escalate", "reject"))
+    case = make_review_case(orch)
+    board.review_case(case.id)
+
+    outcome = board.resume_review(case.id, approve=True, agent="cs-9", note="goodwill")
+    assert outcome.final_status is ReturnStatus.LABEL_ISSUED
+
+
+def test_resume_without_pending_review_fails(orch):
+    board = ReviewBoard(orch, fake_llm())
+    case = make_review_case(orch)
+    with pytest.raises(TransitionError, match="no review awaiting"):
+        board.resume_review(case.id, approve=True, agent="cs-1")
+
+
+def test_double_review_while_pending_fails(orch):
+    board = ReviewBoard(orch, fake_llm(verdict="reject"))
+    case = make_review_case(orch)
+    board.review_case(case.id)
+    with pytest.raises(TransitionError, match="resume it instead"):
+        board.review_case(case.id)
+
+
+def test_low_agreement_not_applied(orch):
+    # 1 approve + 2 escalate -> derived 2/3 < 0.75: pause for human.
+    board = ReviewBoard(orch, fake_llm("approve", "escalate", "escalate", "approve"))
+    case = make_review_case(orch)
+
+    outcome = board.review_case(case.id)
+    assert outcome.derived_confidence == pytest.approx(2 / 3)
+    assert outcome.applied is False
+    assert outcome.pending_human is True
+
+
+def test_self_reported_confidence_is_ignored_for_gating(orch):
+    # Lead says 0.99 but a specialist opposes: derived (2/3) fails the gate
+    # and the hard-disagreement rule also blocks it.
+    board = ReviewBoard(
+        orch, fake_llm("approve", "reject", "approve", "approve", verdict_conf=0.99)
+    )
+    case = make_review_case(orch)
+    outcome = board.review_case(case.id)
+    assert outcome.applied is False
+
+
+def test_escalate_verdict_pauses(orch):
+    board = ReviewBoard(orch, fake_llm(verdict="escalate"))
+    case = make_review_case(orch)
+    outcome = board.review_case(case.id)
+    assert outcome.applied is False
+    assert outcome.pending_human is True
+
+
+def test_auto_apply_off_pauses_even_unanimous(orch):
+    board = ReviewBoard(orch, fake_llm())
+    case = make_review_case(orch)
+    outcome = board.review_case(case.id, auto_apply=False)
+    assert outcome.applied is False
+    assert outcome.pending_human is True
+    # And the human can still finish it through the graph.
+    final = board.resume_review(case.id, approve=True, agent="cs-2")
+    assert final.final_status is ReturnStatus.LABEL_ISSUED
+
+
+def test_failing_specialist_degrades_to_escalation(orch):
     llm = fake_llm()
-    llm.by_role["fraud analyst"] = {"nonsense": True}
+    llm.by_role["fraud analyst"] = RuntimeError("model exploded")
     board = ReviewBoard(orch, llm)
     case = make_review_case(orch)
 
@@ -145,6 +230,8 @@ def test_malformed_specialist_output_degrades_to_escalation(orch):
     bad = [a for a in outcome.assessments if a.agent == "fraud_analyst"][0]
     assert bad.recommendation is Recommendation.ESCALATE
     assert bad.confidence == 0.0
+    # 2 approve + 1 escalate -> 2.5/3 ≥ 0.75: still auto-applies.
+    assert outcome.applied is True
 
 
 def test_board_rejects_non_review_cases(orch):
@@ -152,7 +239,7 @@ def test_board_rejects_non_review_cases(orch):
     board = ReviewBoard(orch, llm)
     register_order(orch)
     case = orch.create_return(make_request())  # auto-approved
-    with pytest.raises(ValueError):
+    with pytest.raises(TransitionError):
         board.review_case(case.id)
     assert llm.calls == []  # no tokens spent on ineligible cases
 
@@ -205,23 +292,31 @@ def test_retriever_loads_users_pickle():
     assert len(results) > 0
 
 
-def test_api_agent_review_endpoint(orch, monkeypatch):
+def test_api_agent_review_and_resume(orch, monkeypatch):
     from fastapi.testclient import TestClient
 
     from app import main
 
     monkeypatch.delenv("RETURNS_API_KEYS", raising=False)
     monkeypatch.setattr(main, "orchestrator", orch)
-    monkeypatch.setattr(main, "review_board", ReviewBoard(orch, fake_llm()))
+    monkeypatch.setattr(
+        main, "review_board", ReviewBoard(orch, fake_llm(verdict="reject"))
+    )
     client = TestClient(main.app)
 
     case = make_review_case(orch)
     r = client.post(f"/returns/{case.id}/agent-review", json={"auto_apply": True})
     assert r.status_code == 200
     body = r.json()
-    assert body["applied"] is True
-    assert body["final_status"] == "label_issued"
-    assert len(body["assessments"]) == 3
+    assert body["applied"] is False
+    assert body["pending_human"] is True
+
+    r = client.post(
+        f"/returns/{case.id}/agent-review/resume",
+        json={"approve": False, "agent": "cs-1", "note": "confirmed"},
+    )
+    assert r.status_code == 200
+    assert r.json()["final_status"] == "rejected"
 
     r = client.post("/returns/ret_missing/agent-review", json={})
     assert r.status_code == 404

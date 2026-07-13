@@ -91,6 +91,10 @@ class TransitionError(Exception):
     """Raised when a requested state transition is not allowed."""
 
 
+class NotFoundError(KeyError):
+    """Raised when a referenced case/order/tracking number does not exist."""
+
+
 class ValidationFailure(Exception):
     """Raised when a return request fails validation against the order."""
 
@@ -269,7 +273,7 @@ class ReturnsOrchestrator:
     def carrier_update(self, tracking_number: str, event: str) -> ReturnCase:
         case = self.store.get_by_tracking(tracking_number)
         if case is None:
-            raise KeyError(f"no return with tracking number {tracking_number}")
+            raise NotFoundError(f"no return with tracking number {tracking_number}")
         mapping = {
             "picked_up": ReturnStatus.IN_TRANSIT,
             "delivered": ReturnStatus.RECEIVED,
@@ -445,5 +449,5 @@ class ReturnsOrchestrator:
     def _require(self, case_id: str) -> ReturnCase:
         case = self.store.get(case_id)
         if case is None:
-            raise KeyError(f"return case {case_id} not found")
+            raise NotFoundError(f"return case {case_id} not found")
         return case

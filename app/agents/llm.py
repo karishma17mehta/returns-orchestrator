@@ -1,25 +1,34 @@
 """LLM client abstraction.
 
 Agents depend on the `LLMClient` protocol, not a vendor SDK, so tests can
-inject fakes and the provider can be swapped. The default implementation
-uses OpenAI chat completions with JSON-mode output (gpt-4o-mini, matching
-the rest of this project), with bounded retries and token accounting.
+inject fakes and the provider can be swapped. `complete()` returns an
+instance of the given pydantic model: the OpenAI implementation uses
+structured outputs (`chat.completions.parse`), so the schema is enforced
+by the API itself — malformed JSON is not a failure mode the callers need
+to handle. Transient failures are retried with exponential backoff.
+
+Set LANGSMITH_TRACING=true (plus LANGSMITH_API_KEY) to trace every call
+in LangSmith; the client is wrapped only when enabled and the `langsmith`
+package is installed.
 """
 from __future__ import annotations
 
-import json
 import logging
 import os
 import threading
 import time
-from typing import Protocol
+from typing import Protocol, TypeVar
+
+from pydantic import BaseModel
 
 log = logging.getLogger("returns.agents.llm")
 
+TModel = TypeVar("TModel", bound=BaseModel)
+
 
 class LLMClient(Protocol):
-    def complete_json(self, system: str, user: str) -> dict:
-        """Run one completion and return the parsed JSON object."""
+    def complete(self, system: str, user: str, output_model: type[TModel]) -> TModel:
+        """Run one completion, returning a validated output_model instance."""
         ...
 
 
@@ -75,18 +84,30 @@ class OpenAIClient:
             from openai import OpenAI
 
             # SDK-level retries off; we handle retry/backoff ourselves.
-            self._client = OpenAI(max_retries=0)
+            client = OpenAI(max_retries=0)
+            if os.environ.get("LANGSMITH_TRACING", "").lower() == "true":
+                try:
+                    from langsmith.wrappers import wrap_openai
+
+                    client = wrap_openai(client)
+                    log.info("LangSmith tracing enabled for OpenAI calls")
+                except ImportError:
+                    log.warning(
+                        "LANGSMITH_TRACING is set but the langsmith package is "
+                        "not installed; tracing disabled"
+                    )
+            self._client = client
         return self._client
 
-    def complete_json(self, system: str, user: str) -> dict:
+    def complete(self, system: str, user: str, output_model: type[TModel]) -> TModel:
         client = self._get_client()
         last_error: Exception | None = None
         for attempt in range(self.max_retries):
             try:
-                completion = client.chat.completions.create(
+                completion = client.chat.completions.parse(
                     model=self.model,
                     temperature=self.temperature,
-                    response_format={"type": "json_object"},
+                    response_format=output_model,
                     messages=[
                         {"role": "system", "content": system},
                         {"role": "user", "content": user},
@@ -97,7 +118,12 @@ class OpenAIClient:
                         completion.usage.prompt_tokens,
                         completion.usage.completion_tokens,
                     )
-                return json.loads(completion.choices[0].message.content)
+                message = completion.choices[0].message
+                if message.parsed is None:
+                    raise RuntimeError(
+                        f"model refused structured output: {message.refusal!r}"
+                    )
+                return message.parsed
             except Exception as e:
                 last_error = e
                 wait = self.backoff_base_s * (2**attempt)

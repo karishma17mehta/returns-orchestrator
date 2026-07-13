@@ -1,83 +1,109 @@
 """FastAPI surface for the returns orchestrator.
 
-Environment:
-  RETURNS_DB              SQLite path (default returns.db, :memory: for ephemeral)
-  RETURNS_API_KEYS        "key:role,key:role" — roles: service, ops (unset = auth off)
-  CARRIER_WEBHOOK_SECRET  HMAC secret for carrier webhooks (unset = check off)
-  POLICY_CATALOG_CSV      per-brand/category policy map (policies_map.csv format)
-  POLICY_CHUNKS_PKL       pickled chunk DataFrame for the policy retriever
-  OPENAI_API_KEY          enables the multi-agent review board
+Configuration comes from app.config.Settings (environment or .env file):
+RETURNS_DB, RETURNS_GRAPH_DB, POLICY_CATALOG_CSV, POLICY_CHUNKS_PKL,
+LABEL_EXPIRY_DAYS, BOARD_CONFIDENCE_THRESHOLD, LOG_LEVEL — plus
+RETURNS_API_KEYS / CARRIER_WEBHOOK_SECRET (read per-request in
+app.security) and OPENAI_API_KEY / LANGSMITH_* (read by the SDKs).
+
+Domain errors surface through registered exception handlers:
+NotFoundError -> 404, ValidationFailure -> 422, TransitionError and
+ConcurrencyError -> 409, LLMUnavailableError -> 503.
 """
 from __future__ import annotations
 
 import logging
-import os
 
-from fastapi import Depends, FastAPI, Header, HTTPException
+from dotenv import load_dotenv
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+
+load_dotenv()  # export .env so the OpenAI/LangSmith SDKs see their keys
 
 from .agents import OpenAIClient, ReviewBoard
 from .agents.llm import LLMUnavailableError
+from .config import get_settings
 from .models import (
     OrderRegistration,
     ReturnCase,
     ReturnRequestCreate,
     ReturnStatus,
 )
-from .orchestrator import ReturnsOrchestrator, TransitionError, ValidationFailure
+from .orchestrator import (
+    NotFoundError,
+    ReturnsOrchestrator,
+    TransitionError,
+    ValidationFailure,
+)
 from .policy import PolicyCatalog
 from .security import require_role, verify_carrier_signature
 from .store import ConcurrencyError, ReturnStore
 
+settings = get_settings()
 logging.basicConfig(
-    level=os.environ.get("LOG_LEVEL", "INFO"),
+    level=settings.log_level,
     format="%(asctime)s %(levelname)s %(name)s %(message)s",
 )
 log = logging.getLogger("returns.api")
 
-app = FastAPI(title="Returns Orchestrator", version="0.3.0")
+app = FastAPI(title="Returns Orchestrator", version="0.4.0")
+
+_ERROR_STATUS = {
+    NotFoundError: 404,
+    ValidationFailure: 422,
+    TransitionError: 409,
+    ConcurrencyError: 409,
+    LLMUnavailableError: 503,
+}
+
+for exc_type, status_code in _ERROR_STATUS.items():
+    def _handler(request: Request, exc: Exception, status_code=status_code):
+        detail = str(exc.args[0]) if exc.args else str(exc)
+        return JSONResponse(status_code=status_code, content={"detail": detail})
+
+    app.add_exception_handler(exc_type, _handler)
 
 
 def _build_orchestrator() -> ReturnsOrchestrator:
     catalog = PolicyCatalog()
-    catalog_csv = os.environ.get("POLICY_CATALOG_CSV")
-    if catalog_csv:
-        catalog = PolicyCatalog.from_csv(catalog_csv)
-        log.info("policy catalog loaded from %s", catalog_csv)
+    if settings.policy_catalog_csv:
+        catalog = PolicyCatalog.from_csv(settings.policy_catalog_csv)
+        log.info("policy catalog loaded from %s", settings.policy_catalog_csv)
     return ReturnsOrchestrator(
-        ReturnStore(os.environ.get("RETURNS_DB", "returns.db")), catalog=catalog
+        ReturnStore(settings.returns_db),
+        catalog=catalog,
+        label_expiry_days=settings.label_expiry_days,
     )
 
 
 def _build_board(orch: ReturnsOrchestrator) -> ReviewBoard:
+    import sqlite3
+
+    from langgraph.checkpoint.sqlite import SqliteSaver
+
     retriever = None
-    chunks_pkl = os.environ.get("POLICY_CHUNKS_PKL")
-    if chunks_pkl:
+    if settings.policy_chunks_pkl:
         from .agents.retriever import LexicalPolicyRetriever
 
-        retriever = LexicalPolicyRetriever.from_pickle(chunks_pkl)
-        log.info("policy retriever loaded from %s", chunks_pkl)
-    return ReviewBoard(orch, llm=OpenAIClient(), retriever=retriever)
+        retriever = LexicalPolicyRetriever.from_pickle(settings.policy_chunks_pkl)
+        log.info("policy retriever loaded from %s", settings.policy_chunks_pkl)
+    # Durable graph state: crash mid-review resumes from the last completed
+    # node; paused (interrupted) reviews survive restarts.
+    checkpointer = SqliteSaver(
+        sqlite3.connect(settings.returns_graph_db, check_same_thread=False)
+    )
+    return ReviewBoard(
+        orch,
+        llm=OpenAIClient(),
+        retriever=retriever,
+        checkpointer=checkpointer,
+        confidence_threshold=settings.board_confidence_threshold,
+    )
 
 
 orchestrator = _build_orchestrator()
 review_board = _build_board(orchestrator)
-
-
-def _http_wrap(fn):
-    """Map domain errors to HTTP codes."""
-    try:
-        return fn()
-    except KeyError as e:
-        raise HTTPException(404, str(e))
-    except ValidationFailure as e:
-        raise HTTPException(422, str(e))
-    except (TransitionError, ValueError) as e:
-        raise HTTPException(409, str(e))
-    except ConcurrencyError as e:
-        raise HTTPException(409, str(e))
-    except LLMUnavailableError as e:
-        raise HTTPException(503, str(e))
 
 
 # -- returns ------------------------------------------------------------------
@@ -92,7 +118,7 @@ def create_return(
     body: ReturnRequestCreate,
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> ReturnCase:
-    return _http_wrap(lambda: orchestrator.create_return(body, idempotency_key))
+    return orchestrator.create_return(body, idempotency_key)
 
 
 @app.get(
@@ -128,9 +154,7 @@ class ReviewBody(BaseModel):
     dependencies=[Depends(require_role("ops"))],
 )
 def review_return(case_id: str, body: ReviewBody) -> ReturnCase:
-    return _http_wrap(
-        lambda: orchestrator.review(case_id, body.approve, body.agent, body.note)
-    )
+    return orchestrator.review(case_id, body.approve, body.agent, body.note)
 
 
 class InspectionBody(BaseModel):
@@ -145,11 +169,7 @@ class InspectionBody(BaseModel):
     dependencies=[Depends(require_role("ops"))],
 )
 def record_inspection(case_id: str, body: InspectionBody) -> ReturnCase:
-    return _http_wrap(
-        lambda: orchestrator.record_inspection(
-            case_id, body.passed, body.agent, body.note
-        )
-    )
+    return orchestrator.record_inspection(case_id, body.passed, body.agent, body.note)
 
 
 class CancelBody(BaseModel):
@@ -162,9 +182,7 @@ class CancelBody(BaseModel):
     dependencies=[Depends(require_role("service"))],
 )
 def cancel_return(case_id: str, body: CancelBody) -> ReturnCase:
-    return _http_wrap(
-        lambda: orchestrator.cancel(case_id, actor="customer", note=body.note)
-    )
+    return orchestrator.cancel(case_id, actor="customer", note=body.note)
 
 
 class AgentReviewBody(BaseModel):
@@ -176,9 +194,26 @@ class AgentReviewBody(BaseModel):
     dependencies=[Depends(require_role("ops"))],
 )
 def agent_review(case_id: str, body: AgentReviewBody):
-    """Run the multi-agent review board on a case in manual review."""
-    return _http_wrap(
-        lambda: review_board.review_case(case_id, auto_apply=body.auto_apply)
+    """Run the multi-agent review board on a case in manual review. If the
+    verdict can't be auto-applied, the review pauses for a human decision
+    (pending_human=true) — feed it via the resume endpoint."""
+    return review_board.review_case(case_id, auto_apply=body.auto_apply)
+
+
+class ResumeReviewBody(BaseModel):
+    approve: bool
+    agent: str
+    note: str | None = None
+
+
+@app.post(
+    "/returns/{case_id}/agent-review/resume",
+    dependencies=[Depends(require_role("ops"))],
+)
+def resume_agent_review(case_id: str, body: ResumeReviewBody):
+    """Resume a paused review with the human decision."""
+    return review_board.resume_review(
+        case_id, approve=body.approve, agent=body.agent, note=body.note
     )
 
 
@@ -195,9 +230,7 @@ class CarrierWebhook(BaseModel):
     dependencies=[Depends(verify_carrier_signature)],
 )
 def carrier_webhook(body: CarrierWebhook) -> ReturnCase:
-    return _http_wrap(
-        lambda: orchestrator.carrier_update(body.tracking_number, body.event)
-    )
+    return orchestrator.carrier_update(body.tracking_number, body.event)
 
 
 # -- internal (merchant systems) ---------------------------------------------
@@ -224,8 +257,7 @@ def flush_outbox() -> dict:
     dependencies=[Depends(require_role("ops"))],
 )
 def sweep_expired() -> dict:
-    expired = orchestrator.sweep_expired_labels()
-    return {"expired": expired}
+    return {"expired": orchestrator.sweep_expired_labels()}
 
 
 # -- observability ---------------------------------------------------------------

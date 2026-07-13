@@ -164,7 +164,7 @@ def run_board_eval(results, customers, sample_n: int) -> None:
     board = ReviewBoard(orch, llm, retriever=retriever)
 
     verdicts = Counter()
-    applied = 0
+    results_board: list[tuple[str, str, float]] = []  # (label, decision, derived)
     for i, (row, _status) in enumerate(sample, 1):
         case = row_to_case(row, customers)
         case.status = ReturnStatus.MANUAL_REVIEW
@@ -172,18 +172,37 @@ def run_board_eval(results, customers, sample_n: int) -> None:
         store.save(case)
         outcome = board.review_case(case.id, auto_apply=False)
         verdicts[outcome.verdict.decision.value] += 1
-        if board._may_apply(outcome.verdict, outcome.assessments):
-            applied += 1
+        results_board.append(
+            (row["label"], outcome.verdict.decision.value, outcome.derived_confidence)
+        )
         print(
             f"  [{i}/{len(sample)}] {row['brand']}/{row['category']} "
             f"${row['price']} label={row['label']} -> "
             f"board={outcome.verdict.decision.value} "
-            f"(conf {outcome.verdict.confidence:.2f})"
+            f"(derived {outcome.derived_confidence:.2f}, "
+            f"self-reported {outcome.verdict.confidence:.2f})"
         )
 
     print(f"\nBoard verdicts over {len(sample)} manual-review rows: {dict(verdicts)}")
-    print(f"Would auto-apply: {applied}/{len(sample)}")
     print(f"LLM usage: {llm.usage.snapshot()}")
+
+    # Threshold calibration sweep: auto-apply is approvals-only, so at each
+    # threshold report how many approvals clear it and how they split by
+    # dataset label (eligible = safe, ineligible = the ones to worry about).
+    print("\nAuto-apply calibration (approvals only):")
+    print(f"{'threshold':>10} {'auto-applied':>13} {'eligible':>9} "
+          f"{'needs_review':>13} {'ineligible':>11}")
+    for t in [0.5, 0.6, 0.7, 0.75, 0.8, 0.9, 1.0]:
+        cleared = [
+            (label, dec) for label, dec, conf in results_board
+            if dec == "approve" and conf >= t
+        ]
+        by_label = Counter(label for label, _dec in cleared)
+        print(
+            f"{t:>10.2f} {len(cleared):>13} {by_label.get('eligible', 0):>9} "
+            f"{by_label.get('needs_review', 0):>13} "
+            f"{by_label.get('ineligible', 0):>11}"
+        )
 
 
 def main() -> None:

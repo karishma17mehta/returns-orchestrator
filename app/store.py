@@ -2,10 +2,15 @@
 
 Return cases, registered orders, customer profiles, idempotency keys, and
 the payment outbox. Documents are stored as JSON blobs with the queryable
-fields denormalized into columns. Case saves use optimistic locking: every
-write must present the version it read, and the version increments on each
-successful write, so concurrent read-modify-write cycles cannot silently
-clobber each other.
+fields denormalized into columns.
+
+Thread-safety: a single connection is shared across request/worker threads
+(and the review board's parallel graph nodes), and SQLite connections are
+not safe for concurrent cursor use — so EVERY query, reads included, goes
+through the store lock. Case saves additionally use optimistic locking:
+every write must present the version it read, and the version increments
+on each successful write, so concurrent read-modify-write cycles cannot
+silently clobber each other.
 """
 from __future__ import annotations
 
@@ -70,7 +75,18 @@ class ReturnStore:
         self._conn = sqlite3.connect(path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._lock = threading.Lock()
-        self._conn.executescript(_SCHEMA)
+        with self._lock:
+            self._conn.executescript(_SCHEMA)
+
+    # -- locked query helpers ------------------------------------------------
+
+    def _fetchone(self, sql: str, params: tuple = ()) -> sqlite3.Row | None:
+        with self._lock:
+            return self._conn.execute(sql, params).fetchone()
+
+    def _fetchall(self, sql: str, params: tuple = ()) -> list[sqlite3.Row]:
+        with self._lock:
+            return self._conn.execute(sql, params).fetchall()
 
     # -- return cases (optimistic locking) --------------------------------
 
@@ -122,41 +138,37 @@ class ReturnStore:
             self._conn.commit()
 
     def get(self, case_id: str) -> ReturnCase | None:
-        row = self._conn.execute(
-            "SELECT body FROM return_cases WHERE id = ?", (case_id,)
-        ).fetchone()
+        row = self._fetchone("SELECT body FROM return_cases WHERE id = ?", (case_id,))
         return ReturnCase.model_validate_json(row["body"]) if row else None
 
     def get_by_tracking(self, tracking_number: str) -> ReturnCase | None:
-        row = self._conn.execute(
+        row = self._fetchone(
             "SELECT body FROM return_cases WHERE tracking_number = ?",
             (tracking_number,),
-        ).fetchone()
+        )
         return ReturnCase.model_validate_json(row["body"]) if row else None
 
     def list(self, status: ReturnStatus | None = None) -> list[ReturnCase]:
         if status:
-            rows = self._conn.execute(
+            rows = self._fetchall(
                 "SELECT body FROM return_cases WHERE status = ? ORDER BY rowid",
                 (status.value,),
-            ).fetchall()
+            )
         else:
-            rows = self._conn.execute(
-                "SELECT body FROM return_cases ORDER BY rowid"
-            ).fetchall()
+            rows = self._fetchall("SELECT body FROM return_cases ORDER BY rowid")
         return [ReturnCase.model_validate_json(r["body"]) for r in rows]
 
     def list_by_order(self, order_id: str) -> list[ReturnCase]:
-        rows = self._conn.execute(
+        rows = self._fetchall(
             "SELECT body FROM return_cases WHERE order_id = ? ORDER BY rowid",
             (order_id,),
-        ).fetchall()
+        )
         return [ReturnCase.model_validate_json(r["body"]) for r in rows]
 
     def status_counts(self) -> dict[str, int]:
-        rows = self._conn.execute(
+        rows = self._fetchall(
             "SELECT status, COUNT(*) AS n FROM return_cases GROUP BY status"
-        ).fetchall()
+        )
         return {r["status"]: r["n"] for r in rows}
 
     # -- order / customer registry -----------------------------------------
@@ -177,23 +189,21 @@ class ReturnStore:
             self._conn.commit()
 
     def get_order(self, order_id: str) -> Order | None:
-        row = self._conn.execute(
-            "SELECT body FROM orders WHERE order_id = ?", (order_id,)
-        ).fetchone()
+        row = self._fetchone("SELECT body FROM orders WHERE order_id = ?", (order_id,))
         return Order.model_validate_json(row["body"]) if row else None
 
     def get_customer(self, customer_id: str) -> CustomerProfile | None:
-        row = self._conn.execute(
+        row = self._fetchone(
             "SELECT body FROM customers WHERE customer_id = ?", (customer_id,)
-        ).fetchone()
+        )
         return CustomerProfile.model_validate_json(row["body"]) if row else None
 
     # -- idempotency ---------------------------------------------------------
 
     def idempotency_lookup(self, key: str) -> str | None:
-        row = self._conn.execute(
+        row = self._fetchone(
             "SELECT case_id FROM idempotency_keys WHERE key = ?", (key,)
-        ).fetchone()
+        )
         return row["case_id"] if row else None
 
     def idempotency_record(self, key: str, case_id: str) -> None:
@@ -218,9 +228,9 @@ class ReturnStore:
         return entry_id
 
     def outbox_pending(self) -> list[dict]:
-        rows = self._conn.execute(
+        rows = self._fetchall(
             "SELECT * FROM payment_outbox WHERE status = 'pending' ORDER BY created_at"
-        ).fetchall()
+        )
         return [dict(r) for r in rows]
 
     def outbox_mark(self, entry_id: str, status: str, error: str | None = None) -> None:
@@ -239,13 +249,14 @@ class ReturnStore:
             self._conn.commit()
 
     def outbox_totals(self) -> dict:
-        row = self._conn.execute(
-            "SELECT COUNT(*) AS n, COALESCE(SUM(amount), 0) AS total "
-            "FROM payment_outbox WHERE status = 'executed'"
-        ).fetchone()
-        pending = self._conn.execute(
-            "SELECT COUNT(*) AS n FROM payment_outbox WHERE status = 'pending'"
-        ).fetchone()
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT COUNT(*) AS n, COALESCE(SUM(amount), 0) AS total "
+                "FROM payment_outbox WHERE status = 'executed'"
+            ).fetchone()
+            pending = self._conn.execute(
+                "SELECT COUNT(*) AS n FROM payment_outbox WHERE status = 'pending'"
+            ).fetchone()
         return {
             "executed_count": row["n"],
             "executed_total": row["total"],

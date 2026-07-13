@@ -6,3 +6,4 @@ __pycache__/
 returns.db
 .DS_Store
 .env
+returns_graph.db
