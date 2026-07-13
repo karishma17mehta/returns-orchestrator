@@ -22,6 +22,9 @@ dev = [
 trace = [
     "langsmith>=0.1",
 ]
+demo = [
+    "streamlit>=1.30",
+]
 
 [build-system]
 requires = ["setuptools>=68"]

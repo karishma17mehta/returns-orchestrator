@@ -1,0 +1,12 @@
+# Runtime dependencies for the Streamlit Community Cloud deploy of the
+# dashboard (streamlit_app.py). The dashboard runs the orchestrator +
+# review board in-process; these are exactly the packages they import.
+# (For the API/tests, use `pip install -e ".[dev]"` instead.)
+streamlit>=1.30
+langgraph>=0.2
+langgraph-checkpoint-sqlite>=2.0
+openai>=1.40
+pydantic>=2.0
+pydantic-settings>=2.0
+python-dotenv>=1.0
+pandas>=2.0

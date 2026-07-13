@@ -173,6 +173,22 @@ Configuration comes from the environment or a `.env` file (see
 read per-request), `OPENAI_API_KEY` (enables the board), and
 `LANGSMITH_TRACING` / `LANGSMITH_API_KEY` (optional tracing).
 
+## Demo dashboard
+
+A Streamlit dashboard (`streamlit_app.py`) runs the orchestrator + review
+board in-process — file a return against sample orders and watch the
+decision, the multi-agent board's reasoning, and the lifecycle live. It
+defaults to a **free simulated board** (no API cost); flip a toggle for the
+real LLM when `OPENAI_API_KEY` is set.
+
+```bash
+pip install -e ".[dev,demo]"
+streamlit run streamlit_app.py        # http://localhost:8501
+```
+
+Deployable to Streamlit Community Cloud from `streamlit_app.py` +
+`requirements.txt` (no secret needed for the simulated board).
+
 ## CI regression gate
 
 `.github/workflows/ci.yml` runs on every push/PR:
